@@ -1,0 +1,189 @@
+%% Placa del motor
+P_nom = 11e3; % Potencia en W
+f     = 50; % Hz
+Nm    = 1455; % RPM
+Vnom     = 400; % Voltaje de estator o de la red (RMS)
+P     = 4; % Numero de polos
+Nsin  = 120*f/P; % RPM, la velocidad sincronica debe ser superior a la nominal
+% La velocidad sincronica es la velocidad a la que gira el campo del 
+
+Jm     = 0.2; % Momento de inercia (kg*m^2)
+JL     = Jm*7;
+Jt     = Jm + JL;
+w      = 2*pi*f; % Frecuencia angular de la red
+wnom   = Nm*(pi/30);
+T_Lnom = P_nom/wnom;
+
+%%% 1.1.- Parametros circuito equivalente
+
+Rs    = 0.467; % Resistencia de estator (Ohm)
+Rr    = 0.3223; % Resistencia de rotor (Ohm)
+Xls   = 0.9894; % Rectancia de fuga de estator (Ohm)
+Xlr   = 1.4862; % Rectancia de fuga de estator (Ohm)
+Xm    = 25.7574;
+
+%%% 1.2 obtencion inductancia
+
+L_ls = Xls/(2*pi*f);
+L_lr = Xlr/(2*pi*f);
+L_m  = Xm/(2*pi*f);
+
+%%% 1.3 Parametros gama
+Ls  = L_ls + L_m;
+Lr  = L_lr + L_m;
+
+GGs = Ls/(L_m*L_ls + L_m*L_lr + L_ls*L_lr);
+GGr = Lr/(L_m*L_ls + L_m*L_lr + L_ls*L_lr);
+GGm = L_m/(L_m*L_ls + L_m*L_lr + L_ls*L_lr);
+
+%%% 2.- Definicion de vectores a utilizar y condiciones iniciales
+
+%%% 2.1 Definir vector de tiempo y paso de integración
+h   = 1e-5; % Paso de integración
+tf  = 8; %Tiempo final
+t   = 0:h:tf; % Vector de tiemp
+n   = length(t);
+
+%%% 2.2 Definir vectores de entrada al modelo (Voltaje y Torque de carga (TL))
+%%% En coordenadas abc -  Asumiendo conexión en delta donde Vfase =
+%%% Ventrelineas
+Vas = Vnom*sqrt(2)*cos(w*t);
+Vbs = Vnom*sqrt(2)*cos(w*t - (2*pi/3));
+Vcs = Vnom*sqrt(2)*cos(w*t + (2*pi/3));
+
+%%% En coordenadas abc -  Asumiendo conexión en estrella donde Vfase =
+%%% Ventrelineas/sqrt(3)
+% Vas = Vnom*sqrt(2/3)*cos(2*pi*f*t);
+% Vbs = Vnom*sqrt(2/3)*cos(2*pi*f*t - (2*pi/3));
+% Vcs = Vnom*sqrt(2/3)*cos(2*pi*f*t + (2*pi/3));
+
+%%%% Convertir señales señales en coordenada abcs a vectores complejos
+
+a    = exp(1i*2*pi/3);
+a2   = a^2;
+
+V_abcs = 2/3*(Vas + a*Vbs + a2*Vcs);
+
+%%% En coordenadas qd     %2*pi*f es una tasa de variacion de un angulo
+
+%wqd      = 0; % Coordenadas qd estacionarias (Transformada de clark)
+wqd      = w; % Transformada de Park
+theta_qd = wqd*t; % Angulo de la transformada
+
+V_qds = exp(-1i*theta_qd).*V_abcs; % fqds = fqs - j*fds
+
+V_qs   = real(V_qds);% Parte real
+V_ds   = -imag(V_qds);% Parte imaginaria %% Precaucion signo de arrastre de la tranformada qd
+
+T_L = 1*T_Lnom*ones(1,n); % No se pasa a qd porque no es una variable trifasica
+
+% V_a = zeros(1,n);
+% V_b = zeros(1,n);
+% V_c = zeros(1,n);
+
+
+
+%%% 2.3 Definir vectores de modelos dinamicos
+wr      = zeros(1,n); % Frecuencia angular de rotor rad-elec/s
+theta_r = zeros(1,n); % 
+w_m     = zeros(1,n); % Velocidad angular de rotor rad-elec/s
+Te      = zeros(1,n); % Torque electrico
+
+Vqr = 0; % Considerando motor jaula ardilla
+Vdr = 0;
+
+% Corrientes de estator y rotor en qd
+Iqs = zeros(1,n); 
+Ids = zeros(1,n);
+Iqr = zeros(1,n);
+Idr = zeros(1,n);
+
+%Enlaces de flujo de estator y rotor en qd (lamda = Y)
+Yqs = zeros(1,n);
+Yds = zeros(1,n);
+Yqr = zeros(1,n);
+Ydr = zeros(1,n);
+
+%%%% 3.0 Algoritmo etirativo
+for k = 2:n
+    
+    %%%% Ecuaciones de componentes de corriente
+    Iqs(k) = GGs*Yqs(k-1) - GGm*Yqr(k-1);
+    Ids(k) = GGs*Yds(k-1) - GGm*Ydr(k-1);
+    Iqr(k) = GGr*Yqr(k-1) - GGm*Yqs(k-1);
+    Idr(k) = GGr*Ydr(k-1) - GGm*Yds(k-1);
+    
+    
+    %%%% Ecuaciones de componentes de los enlaces de flujo
+    Yqs(k) = Yqs(k-1) + h*(V_qs(k) - Rs*Iqs(k) - wqd*Yds(k-1));
+    Yds(k) = Yds(k-1) + h*(V_ds(k) - Rs*Ids(k) + wqd*Yqs(k-1));
+    Yqr(k) = Yqr(k-1) + h*(Vqr    - Rr*Iqr(k) - (wqd - wr(k-1))*Ydr(k-1));
+    Ydr(k) = Ydr(k-1) + h*(Vdr    - Rr*Idr(k) + (wqd - wr(k-1))*Yqr(k-1));
+    
+    
+    %%%% Torque electrico
+    Te(k) = (3/2)*(P/2)*(L_m/Lr)*(Ydr(k)*Iqs(k) - Yqr(k)*Ids(k));
+    
+    
+    %%%% Velocidad y frecuencia angular de rotor
+    w_m(k)  = w_m(k-1) + h*((1/Jt)*(Te(k)-T_L(k)));
+    wr(k)   = w_m(k)*P/2;
+    theta_r(k) = theta_r(k-1) + h*wr(k);
+
+
+
+end
+
+%%%% 4.0 Graficos en coordenadas qd
+figure(1)
+subplot(211)
+plot(t,Te,t,T_L,'linewidth',1.5)
+xlabel('Time [s]')
+ylabel('T_e, T_L [Nm]')
+grid
+subplot(212)
+plot(t,w_m*(30/pi),'linewidth',1.5)
+ylabel('Nm [RPM]')
+xlabel('Time [s]')
+grid
+
+
+%%%% 5.0 Trasformada inversa para obtener graficas 
+
+ias = Iqs.*cos(theta_qd)            + Ids.*sin(theta_qd);
+ibs = Iqs.*cos(theta_qd - (2*pi/3)) + Ids.*sin(theta_qd - (2*pi/3));
+ics = Iqs.*cos(theta_qd + (2*pi/3)) + Ids.*sin(theta_qd + (2*pi/3));
+
+
+
+iar = Iqr.*cos(theta_qd - theta_r)            + Idr.*sin(theta_qd - theta_r);
+ibr = Iqr.*cos(theta_qd - theta_r - (2*pi/3)) + Idr.*sin(theta_qd - theta_r - (2*pi/3));
+icr = Iqr.*cos(theta_qd - theta_r + (2*pi/3)) + Idr.*sin(theta_qd - theta_r + (2*pi/3));
+
+figure(2)
+subplot(211)
+plot(t,ias,t,ibs,t,ics,'linewidth',1.5)
+xlim([1.96 2])
+xlabel('Time [s]')
+grid
+subplot(212)
+plot(t,Vas,t,Vbs,t,Vcs,'linewidth',1.5)
+ylabel('Voltaje [V]')
+xlabel('Time [s]')
+ylim([-1000 1000])
+xlim([1.96 2])
+grid
+
+figure(3)
+plot(t,iar,t,ibr,t,icr,'linewidth',1.5)
+%xlim([1.9 2.3])
+xlabel('Time [s]')
+grid
+%ecuacion que iguala la frecuencia del rotor y la frecuencia del estator
+%fr = s*fs;
+
+figure(4)
+plot(t,Iqs,t,Ids,'linewidth',1.5)
+%xlim([1.9 2.3])
+xlabel('Time [s]')
+grid
